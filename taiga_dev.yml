@@ -1,0 +1,215 @@
+---
+- name: Taiga setup development environment - taiga-back
+  hosts: taiga_dev
+  tags: ['back']
+  vars:
+    user: "{{ ansible_ssh_user }}"
+    proj_name: taiga
+    database_name: "{{ proj_name }}"
+    database_user: vagrant
+    database_pass: changeme
+    locale: en_US.UTF-8
+    taiga_back_path: taiga-back
+    taiga_back_repo_url: git@github.com:taigaio/taiga-back.git
+    taiga_events_path: taiga-events
+    taiga_events_repo_url: git@github.com:taigaio/taiga-events.git
+    venv_home: "{{ ansible_env.HOME }}"
+    venv_path: "{{ venv_home}}/{{ taiga_back_path }}"
+    venv_events_path: "{{ venv_home }}/{{ taiga_events_path }}"
+    live_hostname: 172.27.33.10.xip.io
+  tasks:
+    - name: install build dependencies and database
+      apt: pkg={{ item }} update_cache=yes cache_valid_time=3600
+      become: True
+      with_items:
+        - build-essential
+        - binutils-doc
+        - autoconf
+        - flex
+        - bison
+        - libjpeg-dev
+        - libfreetype6-dev
+        - zlib1g-dev
+        - libzmq3-dev
+        - libgdbm-dev
+        - libncurses5-dev
+        - automake 
+        - libtool 
+        - libffi-dev 
+        - curl 
+        - git 
+        - tmux 
+        - gettext
+        - postgresql-9.3
+        - postgresql-contrib-9.3
+        - postgresql-doc-9.3
+        - postgresql-server-dev-9.3
+        - python-psycopg2
+        - python3
+        - python3-pip
+        - python-dev
+        - python3-dev
+        - python-pip
+        - virtualenvwrapper
+        - libxml2-dev
+        - libxslt-dev
+        - rabbitmq-server
+        - redis-server
+        - nodejs
+        - nodejs-legacy
+        - npm
+    - name: create database user
+      postgresql_user:
+        name: "{{ database_user }}"
+        password: "{{ database_pass }}"
+      become: True
+      become_user: postgres
+    - name: create the database
+      postgresql_db:
+        name: "{{ database_name }}"
+        owner: "{{ database_user }}"
+        encoding: UTF8
+        lc_ctype: "{{ locale }}"
+        lc_collate: "{{ locale }}"
+        template: template0
+      become: True
+      become_user: postgres
+    - name: check out taiga-back repo on the host
+      git:
+        repo: "{{ taiga_back_repo_url }}"
+        dest: "{{ taiga_back_path }}" 
+        accept_hostkey: yes
+        version: stable
+    # We need to do this to prevent the requirements install from failing 
+    # due to old dependency installed by default.
+    - name: upgrade setuptools
+      pip:
+        name: setuptools
+        version: 18.5
+        virtualenv: "{{ venv_path }}"
+        virtualenv_python: python3.4
+    # Later version is broken, this version suffices, freeze it.
+    # Its not explicitly referenced but is a dependency of a listed frozen 
+    # dependency in requirements.txt. Poor job of requirements management.
+    - name: freeze html5lib
+      pip:
+        name: html5lib
+        version: 0.999
+        virtualenv: "{{ venv_path }}"
+        virtualenv_python: python3.4
+    - name: install requirements-devel.txt
+      pip:
+        requirements: "{{ venv_path }}/requirements-devel.txt"
+        virtualenv: "{{ venv_path }}"
+        virtualenv_python: python3.4
+    - name: generate the settings file
+      template: src=templates/local.py.j2 dest={{ venv_path }}/settings/local.py
+    - name: apply database migrations
+      django_manage:
+        command: "migrate --noinput"
+        app_path: "{{ venv_path }}"
+        virtualenv: "{{ venv_path }}"
+    - name: load database with initial data and admin user
+      django_manage:
+        command: "loaddata"
+        fixtures: "initial_user initial_project_templates initial_role"
+        app_path: "{{ venv_path }}"
+        virtualenv: "{{ venv_path }}"
+    - name: compile messages
+      django_manage:
+        command: "compilemessages"
+        app_path: "{{ venv_path }}"
+        virtualenv: "{{ venv_path }}"
+    - name: collect static content
+      django_manage:
+        command: "collectstatic --noinput"
+        app_path: "{{ venv_path }}"
+        virtualenv: "{{ venv_path }}"
+    - name: add rabbitmq vhost for events
+      rabbitmq_vhost: name={{ proj_name }}
+      become: True
+    - name: add rabbitmq user
+      rabbitmq_user:
+        user: "{{ proj_name }}"
+        password: "PASSWORD"
+        vhost: "{{ proj_name }}"
+        configure_priv: ".*"
+        read_priv: ".*"
+        write_priv: ".*"
+      become: True
+    - name: check out taiga-events repo on the host
+      git:
+        repo: "{{ taiga_events_repo_url }}"
+        dest: "{{ taiga_events_path }}" 
+        accept_hostkey: yes
+    - name: install events javascript dependencies
+      npm: path={{ venv_events_path }}
+    - name: install coffee-script nodejs package globally
+      npm:
+        name: "coffee-script"
+        global: yes
+      become: True
+    - name: generate events config file
+      template: src=templates/config.json.j2 dest={{ venv_events_path }}/config.json
+    - name: install circus
+      pip:
+        name: circus
+        executable: pip2
+      become: True
+    - name: create local conf folder for circus confs for taiga
+      file: path={{ venv_home }}/conf state=directory mode=0755
+    - name: create local log folder for circus taiga logs
+      file: path={{ venv_home }}/logs state=directory mode=0755
+    - name: generate the circus ini file
+      template: src=templates/circus.ini.j2 dest={{ venv_home }}/conf/circus.ini
+    - name: generate the circus service conf file
+      template: src=templates/circus.conf.j2 dest=/etc/init/circus.conf
+      become: True
+    - name: start circus service
+      service: name=circus state=started
+      become: True
+- name: Taiga setup development environment - taiga-front
+  hosts: taiga_dev
+  tags: ['front']
+  vars:
+    user: "{{ ansible_ssh_user }}"
+    taiga_front_path: taiga-front-dist
+    taiga_front_repo_url: git@github.com:taigaio/taiga-front-dist.git
+    venv_home: "{{ ansible_env.HOME }}"
+    venv_path: "{{ venv_home}}/{{ taiga_front_path }}"
+    taiga_back_path: "{{ venv_home }}/taiga-back"
+    live_hostname: 172.27.33.10.xip.io
+    domains:
+      - 172.27.33.10.xip.io
+      - www.172.27.33.10.xip.io
+  tasks:
+    - name: install dependencies
+      apt: pkg=nginx update_cache=yes cache_valid_time=3600
+      become: True
+    - name: check out taiga-front-dist repo on the host
+      git:
+        repo: "{{ taiga_front_repo_url }}"
+        dest: "{{ taiga_front_path }}" 
+        accept_hostkey: yes
+        version: stable
+    - name: copy the conf file
+      template: src=templates/conf.json.j2 dest={{ venv_path }}/dist/conf.json
+    - name: set the nginx config file
+      template: src=templates/nginx.conf.j2 dest=/etc/nginx/sites-available/taiga
+      notify: restart nginx
+      become: True
+    - name: enable the nginx config file
+      file:
+        src: /etc/nginx/sites-available/taiga
+        dest: /etc/nginx/sites-enabled/taiga
+        state: link
+      notify: restart nginx
+      become: True
+    - name: remove default nginx config file
+      file: path=/etc/nginx/sites-enabled/default state=absent
+      notify: restart nginx
+      become: True
+  handlers:
+    - name: restart nginx
+      service: name=nginx state=restarted
+      become: True

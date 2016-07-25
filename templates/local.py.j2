@@ -1,0 +1,32 @@
+from .development import *
+from .celery import *
+
+MEDIA_URL = "http://{{ live_hostname }}/media/"
+STATIC_URL = "http://{{ live_hostname }}/static/"
+ADMIN_MEDIA_PREFIX = "http://{{ live_hostname }}/static/admin/"
+SITES["front"]["scheme"] = "http"
+SITES["front"]["domain"] = "{{ live_hostname }}"
+
+SECRET_KEY = "mysecret"
+
+DEBUG = False
+TEMPLATE_DEBUG = False
+PUBLIC_REGISTER_ENABLED = True
+
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': '{{ database_name }}',
+        'USER': '{{ database_user }}',
+        'PASSWORD': '{{ database_pass }}',
+        'HOST': '',
+        'PORT': '',
+    }
+}
+
+BROKER_URL = 'amqp://guest:guest@localhost:5672//'
+CELERY_RESULT_BACKEND = 'redis://localhost:6379/0'
+CELERY_ENABLED = True
+
+EVENTS_PUSH_BACKEND = "taiga.events.backends.rabbitmq.EventsPushBackend"
+EVENTS_PUSH_BACKEND_OPTIONS = {"url": "amqp://{{ proj_name }}:PASSWORD@localhost:5672/{{ proj_name }}"}
